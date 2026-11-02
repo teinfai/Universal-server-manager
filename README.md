@@ -8,17 +8,12 @@ It works with GitLab installed with apt on Ubuntu or Debian (amd64 or arm64).
 
 ## Before you start
 
-Get these three things ready:
+Get these two things ready:
 
-1. **GitLab token.** Sign in to GitLab with any account. Select your
-   avatar, then **Edit profile**, then **Personal access tokens**
-   (older GitLab: **Access tokens**). Add a new token with the
-   `read_api` scope. If GitLab asks for a token type, pick
-   **Legacy token**. Copy the token now; GitLab shows it only once.
-2. **Telegram bot token.** In Telegram, open
+1. **Telegram bot token.** In Telegram, open
    [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the
    steps. Copy the token it gives you.
-3. **Telegram group ID.** Add your bot to your group. In the group, send
+2. **Telegram group ID.** Add your bot to your group. In the group, send
    `/start@your_bot_username`. Then open this link in a browser, with your
    bot token in place of `<bot-token>`:
 
@@ -40,7 +35,6 @@ Most questions show a default in `[brackets]`. Press Enter to use it. You
 only need to type:
 
 - your GitLab web address, like `https://gitlab.example.com`
-- the GitLab token
 - the Telegram bot token
 - the Telegram group ID
 - the update time in 24-hour format, like `23:30` (or press Enter for `02:00`)
@@ -88,12 +82,11 @@ time when nobody runs CI jobs.
 - Before each update, USM checks there is enough free disk for a
   backup. If not, it skips that night and tells your Telegram group
   how much space it needs. `usm test` checks this too.
-- GitLab tokens expire, after 365 days by default. Before yours does, make a
-  new one and run the install line again. Answer `n` to
-  `Keep current settings?`.
 - USM never undoes an update by itself. Only `restore --yes` does that.
 - The backup does not include object storage or an outside database. Back
   those up yourself.
+- USM checks GitLab with GitLab's own readiness check, run on the GitLab
+  server. No GitLab token is needed.
 
 ## Uninstall
 

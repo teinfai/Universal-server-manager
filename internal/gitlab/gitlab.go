@@ -8,6 +8,8 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -399,54 +401,43 @@ func Disk(r *remote.Client, dir string) error {
 	return nil
 }
 
-type API struct{ URL, Token string }
+var readyHostPattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
 
-type APIError struct {
-	Status int
-	Err    error
-}
-
-func (e *APIError) Error() string {
-	if e.Err != nil {
-		return e.Err.Error()
-	}
-	return fmt.Sprintf("GitLab API HTTP %d", e.Status)
-}
-
-func (a API) request(method, endpoint string, target any) error {
-	request, err := http.NewRequest(method, a.URL+"/api/v4"+endpoint, nil)
+func Ready(r *remote.Client, gitlabURL string) error {
+	u, err := url.Parse(gitlabURL)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("PRIVATE-TOKEN", a.Token)
-	response, err := httpClient().Do(request)
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("invalid GitLab URL scheme")
+	}
+	host := u.Hostname()
+	if !readyHostPattern.MatchString(host) {
+		return errors.New("invalid GitLab URL host")
+	}
+	portText := u.Port()
+	if portText == "" {
+		portText = "80"
+		if u.Scheme == "https" {
+			portText = "443"
+		}
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("invalid GitLab URL port")
+	}
+	hostPort := fmt.Sprintf("%s:%d", host, port)
+	command := fmt.Sprintf("curl -sk --max-time 30 --resolve %s:127.0.0.1 %s://%s/-/readiness", hostPort, u.Scheme, hostPort)
+	output, err := r.Exec(context.Background(), command)
 	if err != nil {
-		return &APIError{Err: err}
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return &APIError{Status: response.StatusCode}
-	}
-	d := json.NewDecoder(response.Body)
-	if err := d.Decode(target); err != nil {
-		return fmt.Errorf("GitLab API JSON: %w", err)
-	}
-	var extra any
-	if err := d.Decode(&extra); err != io.EOF {
-		return errors.New("unexpected data after GitLab JSON")
-	}
-	return nil
-}
-
-func (a API) Version(expected Version) error {
-	var result struct {
-		Version string `json:"version"`
-	}
-	if err := a.request(http.MethodGet, "/version", &result); err != nil {
 		return err
 	}
-	if result.Version != expected.Base && !strings.HasPrefix(result.Version, expected.Base+"-") {
-		return errors.New("GitLab API version does not match package")
+	var result struct{ Status string }
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return fmt.Errorf("GitLab readiness: %w", err)
+	}
+	if result.Status != "ok" {
+		return fmt.Errorf("GitLab readiness: %s", result.Status)
 	}
 	return nil
 }

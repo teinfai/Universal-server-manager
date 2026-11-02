@@ -28,7 +28,6 @@ type Config struct {
 	SSH        SSH    `yaml:"ssh"`
 	GitLab     struct {
 		URL       string `yaml:"url"`
-		Token     string `yaml:"token"`
 		BackupDir string `yaml:"backup_dir"`
 	} `yaml:"gitlab"`
 	Telegram struct {
@@ -88,7 +87,7 @@ func Load(path string) (*Config, error) {
 	}
 	for _, field := range []string{
 		"server_name", "ssh.host", "ssh.port", "ssh.user", "ssh.key_file", "ssh.known_hosts_file",
-		"gitlab.url", "gitlab.token", "gitlab.backup_dir", "telegram.bot_token", "telegram.chat_id",
+		"gitlab.url", "gitlab.backup_dir", "telegram.bot_token", "telegram.chat_id",
 		"schedule.timezone", "schedule.start", "state_dir", "log_dir",
 	} {
 		if !present(&document, strings.Split(field, ".")) {

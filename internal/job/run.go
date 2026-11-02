@@ -21,7 +21,6 @@ type Job struct {
 	config   *config.Config
 	state    *state.State
 	remote   *remote.Client
-	api      gitlab.API
 	telegram notify.Telegram
 	log      *os.File
 }
@@ -34,7 +33,7 @@ type localError struct {
 func (e *localError) Error() string { return e.kind + ": " + e.err.Error() }
 
 func New(c *config.Config) *Job {
-	j := &Job{config: c, api: gitlab.API{URL: c.GitLab.URL, Token: c.GitLab.Token}, telegram: notify.Telegram{BotToken: c.Telegram.BotToken, ChatID: c.Telegram.ChatID}}
+	j := &Job{config: c, telegram: notify.Telegram{BotToken: c.Telegram.BotToken, ChatID: c.Telegram.ChatID}}
 	j.remote = &remote.Client{Config: c.SSH, Logf: j.logf}
 	return j
 }
@@ -54,7 +53,7 @@ func (j *Job) night(t time.Time) (time.Time, error) {
 }
 
 func (j *Job) redact(text string) string {
-	for _, secret := range []string{j.config.GitLab.Token, j.config.Telegram.BotToken} {
+	for _, secret := range []string{j.config.Telegram.BotToken} {
 		if secret != "" {
 			text = strings.ReplaceAll(text, secret, "[redacted]")
 		}
@@ -242,7 +241,7 @@ func (j *Job) Run(now bool) int {
 	if err := gitlab.Services(j.remote); err != nil {
 		return j.skip("GitLab not running", err)
 	}
-	if err := j.api.Version(current); err != nil {
+	if err := gitlab.Ready(j.remote, j.config.GitLab.URL); err != nil {
 		return j.skip("GitLab not answering", err)
 	}
 	if err := gitlab.Background(j.remote); err != nil {
@@ -297,7 +296,7 @@ func (j *Job) Run(now bool) int {
 		return j.fail("Install", err)
 	}
 	j.say("Installed")
-	if err := j.health(next); err != nil {
+	if err := j.health(); err != nil {
 		return j.fail("Check", err)
 	}
 	if _, err := j.remote.Exec(context.Background(), "sudo gitlab-rake gitlab:check SANITIZE=true"); err != nil {
@@ -317,11 +316,11 @@ func (j *Job) Run(now bool) int {
 	return j.end("done", "", "Done. Now "+next.Base)
 }
 
-func (j *Job) health(version gitlab.Version) error {
+func (j *Job) health() error {
 	if err := gitlab.Services(j.remote); err != nil {
 		return err
 	}
-	return j.api.Version(version)
+	return gitlab.Ready(j.remote, j.config.GitLab.URL)
 }
 
 func (j *Job) backup(pkg string, current gitlab.Version) error {
@@ -473,7 +472,7 @@ func (j *Job) Restore(yes bool) int {
 	if err := gitlab.Installed(j.remote, backup.Package, version); err != nil {
 		return failed(err)
 	}
-	if err := j.health(version); err != nil {
+	if err := j.health(); err != nil {
 		return failed(err)
 	}
 	return j.end("done", "restore", "Restore done. Now "+version.Base)
@@ -584,15 +583,11 @@ func (j *Job) Test() int {
 		err = gitlab.Sudo(j.remote)
 	}
 	report("SSH and sudo", err)
-	_, current, packageErr := gitlab.Package(j.remote)
+	_, _, packageErr := gitlab.Package(j.remote)
 	report("Package", packageErr)
 	report("Services", gitlab.Services(j.remote))
 	report("Disk space", gitlab.Disk(j.remote, j.config.GitLab.BackupDir))
-	if packageErr != nil {
-		report("API and version", errors.New("installed version is unavailable"))
-	} else {
-		report("API and version", j.api.Version(current))
-	}
+	report("GitLab ready", gitlab.Ready(j.remote, j.config.GitLab.URL))
 	_, err = gitlab.Stops()
 	report("Stops file", err)
 	report("Telegram", j.say("usm test message"))

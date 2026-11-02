@@ -91,8 +91,9 @@ if [[ ${1:-} == --uninstall ]]; then
         userdel usm || true
     fi
     printf '%s\n' 'If GitLab is on another server, run these there:' \
-        'userdel -r usm' \
-        'rm -f /etc/sudoers.d/usm /usr/local/sbin/usm-step.sh'
+        'userdel -r usm   (only if you used the usm user)' \
+        'rm -f /etc/sudoers.d/usm /usr/local/sbin/usm-step.sh' \
+        "Remove the usm@ key line from the SSH user's ~/.ssh/authorized_keys"
     exit 0
 fi
 
@@ -128,16 +129,20 @@ if [[ -e /etc/usm/config.yaml ]]; then
         keep_settings=true
         start_time=
         timezone=
+        has_token=false
         start_line_pattern='^  start: "(([01][0-9]|2[0-3]):[0-5][0-9])"$'
         timezone_line_pattern='^  timezone: "([^"]+)"$'
+        token_line_pattern='^  token: '
         while IFS= read -r line || [[ -n $line ]]; do
             if [[ $line =~ $start_line_pattern ]]; then
                 start_time=${BASH_REMATCH[1]}
             elif [[ $line =~ $timezone_line_pattern ]]; then
                 timezone=${BASH_REMATCH[1]}
+            elif [[ $line =~ $token_line_pattern ]]; then
+                has_token=true
             fi
         done < /etc/usm/config.yaml
-        if [[ -z $start_time ]] || ! valid_timezone "$timezone"; then
+        if [[ -z $start_time ]] || ! valid_timezone "$timezone" || [[ $has_token == true ]]; then
             printf 'Settings are from an older version. Please answer the questions again.\n'
             keep_settings=false
         fi
@@ -157,10 +162,14 @@ if [[ $keep_settings == false ]]; then
     fi
     ask 'SSH port [22]' 22 '^[0-9]{1,5}$' port
     ssh_port=$answer
+    if [[ $same_server == [Yy] ]]; then
+        ssh_user=usm
+    else
+        ask 'SSH user on the GitLab server [usm]' usm '^[a-z_][a-z0-9_-]{0,31}$'
+        ssh_user=$answer
+    fi
     ask 'GitLab web address (like https://gitlab.example.com)' '' '^https?://[A-Za-z0-9.:-]+/?$'
     gitlab_url=${answer%/}
-    ask 'GitLab token (input hidden)' '' '^[A-Za-z0-9._-]{20,}$' secret
-    gitlab_token=$answer
     ask 'Telegram bot token (input hidden)' '' '^[0-9]+:[A-Za-z0-9_-]+$' secret
     telegram_bot_token=$answer
     ask 'Telegram group ID (like -1001234567890)' '' '^-?[0-9]+$'
@@ -199,7 +208,8 @@ if [[ $keep_settings == false ]]; then
         printf '%s\n' 'usm ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/usm
         chmod 0440 /etc/sudoers.d/usm
     else
-        cat <<EOF
+        if [[ $ssh_user == usm ]]; then
+            cat <<EOF
 Run these on the GitLab server:
 sudo useradd --create-home --shell /bin/bash usm
 sudo install -d -o usm -g usm -m 0700 /home/usm/.ssh
@@ -209,6 +219,12 @@ sudo chmod 0600 /home/usm/.ssh/authorized_keys
 echo 'usm ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/usm
 sudo chmod 0440 /etc/sudoers.d/usm
 EOF
+        else
+            cat <<EOF
+Run this on the GitLab server (user $ssh_user needs passwordless sudo):
+echo '$public_key' | sudo tee -a ~$ssh_user/.ssh/authorized_keys
+EOF
+        fi
         ask 'Press Enter when done' '' '^$'
     fi
 
@@ -232,12 +248,11 @@ server_name: "$server_name"
 ssh:
   host: "$ssh_host"
   port: $ssh_port
-  user: "usm"
+  user: "$ssh_user"
   key_file: "/etc/usm/id_ed25519"
   known_hosts_file: "/etc/usm/known_hosts"
 gitlab:
   url: "$gitlab_url"
-  token: "$gitlab_token"
   backup_dir: "$backup_dir"
 telegram:
   bot_token: "$telegram_bot_token"
