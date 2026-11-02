@@ -126,6 +126,21 @@ if [[ -e /etc/usm/config.yaml ]]; then
     ask 'Keep current settings? [Y/n]' Y '^[YyNn]$'
     if [[ $answer == [Yy] ]]; then
         keep_settings=true
+        start_time=
+        timezone=
+        start_line_pattern='^  start: "(([01][0-9]|2[0-3]):[0-5][0-9])"$'
+        timezone_line_pattern='^  timezone: "([^"]+)"$'
+        while IFS= read -r line || [[ -n $line ]]; do
+            if [[ $line =~ $start_line_pattern ]]; then
+                start_time=${BASH_REMATCH[1]}
+            elif [[ $line =~ $timezone_line_pattern ]]; then
+                timezone=${BASH_REMATCH[1]}
+            fi
+        done < /etc/usm/config.yaml
+        if [[ -z $start_time ]] || ! valid_timezone "$timezone"; then
+            printf 'Settings are from an older version. Please answer the questions again.\n'
+            keep_settings=false
+        fi
     fi
 fi
 
@@ -144,13 +159,15 @@ if [[ $keep_settings == false ]]; then
     ssh_port=$answer
     ask 'GitLab web address (like https://gitlab.example.com)' '' '^https?://[A-Za-z0-9.:-]+/?$'
     gitlab_url=${answer%/}
-    ask 'GitLab admin token (input hidden)' '' '^[A-Za-z0-9._-]{20,}$' secret
+    ask 'GitLab token (input hidden)' '' '^[A-Za-z0-9._-]{20,}$' secret
     gitlab_token=$answer
     ask 'Telegram bot token (input hidden)' '' '^[0-9]+:[A-Za-z0-9_-]+$' secret
     telegram_bot_token=$answer
     ask 'Telegram group ID (like -1001234567890)' '' '^-?[0-9]+$'
     telegram_chat_id=$answer
     ask_timezone
+    ask 'Update time, 24-hour (like 02:00) [02:00]' 02:00 '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+    start_time=$answer
     ask 'Backup folder on the GitLab server [/var/opt/gitlab/backups]' /var/opt/gitlab/backups '^/[A-Za-z0-9._/-]+$'
     backup_dir=$answer
 
@@ -227,8 +244,7 @@ telegram:
   chat_id: "$telegram_chat_id"
 schedule:
   timezone: "$timezone"
-  latest_start: "04:30"
-  ci_wait_minutes: 60
+  start: "$start_time"
 state_dir: "/var/lib/usm"
 log_dir: "/var/log/usm"
 EOF
@@ -248,34 +264,18 @@ TimeoutStartSec=20h
 EOF
 chmod 0644 /etc/systemd/system/usm.service
 
-if [[ $keep_settings == true && -e /etc/systemd/system/usm.timer ]]; then
-    timezone=
-    while IFS= read -r line || [[ -n $line ]]; do
-        case "$line" in
-            'OnCalendar=*-*-* 02:00:00 '*) timezone=${line#'OnCalendar=*-*-* 02:00:00 '} ;;
-        esac
-    done < /etc/systemd/system/usm.timer
-    if ! valid_timezone "$timezone"; then
-        printf 'Invalid time zone in existing usm.timer.\n'
-        exit 1
-    fi
-else
-    if [[ $keep_settings == true ]]; then
-        ask_timezone
-    fi
-    cat > /etc/systemd/system/usm.timer <<EOF
+cat > /etc/systemd/system/usm.timer <<EOF
 [Unit]
-Description=Run USM at 02:00
+Description=Run USM every night
 
 [Timer]
-OnCalendar=*-*-* 02:00:00 $timezone
+OnCalendar=*-*-* $start_time:00 $timezone
 Persistent=false
 
 [Install]
 WantedBy=timers.target
 EOF
-    chmod 0644 /etc/systemd/system/usm.timer
-fi
+chmod 0644 /etc/systemd/system/usm.timer
 systemctl daemon-reload
 
 if ! runuser -u usm -- /usr/local/bin/usm test; then
@@ -283,7 +283,8 @@ if ! runuser -u usm -- /usr/local/bin/usm test; then
     exit 1
 fi
 
-systemctl enable --now usm.timer
-printf 'Installed. GitLab updates every night at 02:00 (%s).\n' "$timezone"
+systemctl enable usm.timer
+systemctl restart usm.timer
+printf 'Installed. GitLab updates every night at %s (%s).\n' "$start_time" "$timezone"
 printf 'Check: sudo -u usm usm status\n'
 exit 0

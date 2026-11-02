@@ -1,7 +1,6 @@
 package gitlab
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"io"
 	"math/big"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -393,9 +391,8 @@ func Disk(r *remote.Client, dir string) error {
 type API struct{ URL, Token string }
 
 type APIError struct {
-	Status  int
-	Network bool
-	Err     error
+	Status int
+	Err    error
 }
 
 func (e *APIError) Error() string {
@@ -405,129 +402,40 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("GitLab API HTTP %d", e.Status)
 }
 
-func Unavailable(err error) bool {
-	var apiErr *APIError
-	return errors.As(err, &apiErr) && (apiErr.Network || (apiErr.Status >= 500 && apiErr.Status <= 599))
-}
-
-func (a API) request(method, endpoint string, form url.Values, target any) (string, error) {
-	var body io.Reader
-	if form != nil {
-		body = strings.NewReader(form.Encode())
-	}
-	request, err := http.NewRequest(method, a.URL+"/api/v4"+endpoint, body)
+func (a API) request(method, endpoint string, target any) error {
+	request, err := http.NewRequest(method, a.URL+"/api/v4"+endpoint, nil)
 	if err != nil {
-		return "", err
+		return err
 	}
 	request.Header.Set("PRIVATE-TOKEN", a.Token)
-	if form != nil {
-		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
 	response, err := httpClient().Do(request)
 	if err != nil {
-		return "", &APIError{Network: true, Err: err}
+		return &APIError{Err: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", &APIError{Status: response.StatusCode}
+		return &APIError{Status: response.StatusCode}
 	}
 	d := json.NewDecoder(response.Body)
 	if err := d.Decode(target); err != nil {
-		return "", fmt.Errorf("GitLab API JSON: %w", err)
+		return fmt.Errorf("GitLab API JSON: %w", err)
 	}
 	var extra any
 	if err := d.Decode(&extra); err != io.EOF {
-		return "", errors.New("unexpected data after GitLab JSON")
+		return errors.New("unexpected data after GitLab JSON")
 	}
-	return response.Header.Get("X-Next-Page"), nil
+	return nil
 }
 
 func (a API) Version(expected Version) error {
 	var result struct {
 		Version string `json:"version"`
 	}
-	if _, err := a.request(http.MethodGet, "/version", nil, &result); err != nil {
+	if err := a.request(http.MethodGet, "/version", &result); err != nil {
 		return err
 	}
 	if result.Version != expected.Base && !strings.HasPrefix(result.Version, expected.Base+"-") {
 		return errors.New("GitLab API version does not match package")
 	}
 	return nil
-}
-
-func (a API) list(endpoint string) ([]int64, error) {
-	var ids []int64
-	page := ""
-	seen := make(map[string]bool)
-	for {
-		path := endpoint
-		if page != "" {
-			path += "&page=" + url.QueryEscape(page)
-		}
-		var raw json.RawMessage
-		next, err := a.request(http.MethodGet, path, nil, &raw)
-		if err != nil {
-			return nil, err
-		}
-		trimmed := bytes.TrimSpace(raw)
-		if len(trimmed) == 0 || trimmed[0] != '[' {
-			return nil, errors.New("GitLab API list must be an array")
-		}
-		var entries []struct {
-			ID int64 `json:"id"`
-		}
-		if err := json.Unmarshal(raw, &entries); err != nil {
-			return nil, err
-		}
-		for _, entry := range entries {
-			if entry.ID <= 0 {
-				return nil, errors.New("invalid GitLab API id")
-			}
-			ids = append(ids, entry.ID)
-		}
-		if next == "" {
-			return ids, nil
-		}
-		if seen[next] {
-			return nil, errors.New("repeated GitLab API pagination page")
-		}
-		seen[next] = true
-		page = next
-	}
-}
-
-func (a API) Runners(unpausedOnly bool) ([]int64, error) {
-	endpoint := "/runners/all?per_page=100"
-	if unpausedOnly {
-		endpoint = "/runners/all?paused=false&per_page=100"
-	}
-	return a.list(endpoint)
-}
-
-func (a API) Jobs(id int64) (int, error) {
-	if id <= 0 {
-		return 0, errors.New("invalid runner id")
-	}
-	jobs, err := a.list(fmt.Sprintf("/runners/%d/jobs?status=running&per_page=100", id))
-	return len(jobs), err
-}
-
-func (a API) SetPaused(id int64, paused bool) error {
-	if id <= 0 {
-		return errors.New("invalid runner id")
-	}
-	var result map[string]json.RawMessage
-	_, err := a.request(http.MethodPut, fmt.Sprintf("/runners/%d", id), url.Values{"paused": {strconv.FormatBool(paused)}}, &result)
-	if err != nil {
-		return err
-	}
-	if result == nil {
-		return errors.New("runner response must be a JSON object")
-	}
-	return nil
-}
-
-func (a API) TestRunners() error {
-	_, err := a.list("/runners/all?per_page=1")
-	return err
 }

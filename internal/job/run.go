@@ -41,6 +41,18 @@ func New(c *config.Config) *Job {
 
 func (j *Job) now() time.Time { return time.Now().In(j.config.Location) }
 
+func (j *Job) night(t time.Time) (time.Time, error) {
+	start, err := time.Parse("15:04", j.config.Schedule.Start)
+	if err != nil {
+		return time.Time{}, &localError{"config", err}
+	}
+	night := time.Date(t.Year(), t.Month(), t.Day(), start.Hour(), start.Minute(), 0, 0, j.config.Location)
+	if night.After(t) {
+		night = night.AddDate(0, 0, -1)
+	}
+	return night, nil
+}
+
 func (j *Job) redact(text string) string {
 	for _, secret := range []string{j.config.GitLab.Token, j.config.Telegram.BotToken} {
 		if secret != "" {
@@ -139,48 +151,15 @@ func (j *Job) connect(writeScript bool) error {
 	return nil
 }
 
-func (j *Job) resumeRunners() ([]int64, error) {
-	ids := append([]int64(nil), j.state.PausedRunners...)
-	seen := make(map[int64]bool)
-	var failed []int64
-	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		if err := j.api.SetPaused(id, false); err != nil {
-			j.logf(fmt.Sprintf("resume runner %d: %s", id, err))
-			failed = append(failed, id)
-			continue
-		}
-		j.state.RemoveRunner(id)
-		if err := j.save(); err != nil {
-			return failed, err
-		}
-	}
-	if len(failed) != 0 {
-		return failed, fmt.Errorf("could not resume runners: %v", failed)
-	}
-	return nil, nil
-}
-
-func (j *Job) fail(action string, cause error, next gitlab.Version, cleanupDone bool) int {
+func (j *Job) fail(action string, cause error) int {
 	var local *localError
 	if errors.As(cause, &local) {
 		return j.local(cause)
 	}
 	j.logf(cause.Error())
-	if (action == "Backup" || action == "Pause CI") && !cleanupDone {
-		if _, err := j.resumeRunners(); err != nil {
-			if errors.As(err, &local) {
-				return j.local(err)
-			}
-			j.logf(err.Error())
-		}
-	}
 	var message string
 	switch action {
-	case "Backup", "Pause CI":
+	case "Backup":
 		message = "Failed at " + action + ". Nothing changed.\nWhen fixed: usm resume"
 	case "Install", "Check":
 		backupTime, err := time.Parse(time.RFC3339, j.state.LastBackup.Time)
@@ -188,8 +167,6 @@ func (j *Job) fail(action string, cause error, next gitlab.Version, cleanupDone 
 			return j.local(&localError{"state file", err})
 		}
 		message = "Failed at " + action + ". GitLab may be down.\nBackup " + backupTime.In(j.config.Location).Format("15:04") + " is safe.\nTo go back: usm restore"
-	case "CI back on":
-		message = "Failed at CI back on. GitLab is now " + next.Base + " but CI is still paused.\nWhen fixed: usm resume"
 	case "Restore":
 		message = "Restore failed. Check by hand."
 	}
@@ -222,19 +199,16 @@ func (j *Job) Run(now bool) int {
 		j.say("Still stopped after a failure. Run usm resume when fixed.")
 		return 0
 	}
-	if len(j.state.PausedRunners) != 0 {
-		return j.skip("CI runners still paused, run usm resume", nil)
-	}
 	if !now {
 		current := j.now()
-		if j.state.LastInstallDate == current.Format("2006-01-02") {
+		start, err := j.night(current)
+		if err != nil {
+			return j.local(err)
+		}
+		if j.state.LastInstallDate == start.Format("2006-01-02") {
 			return j.end("nothing", "", "")
 		}
-		cutoff, err := time.ParseInLocation("2006-01-02 15:04", current.Format("2006-01-02")+" "+j.config.Schedule.LatestStart, j.config.Location)
-		if err != nil {
-			return j.skip("too late tonight", err)
-		}
-		if current.After(cutoff) {
+		if current.Sub(start) > 2*time.Hour+30*time.Minute {
 			return j.skip("too late tonight", nil)
 		}
 	}
@@ -301,38 +275,31 @@ func (j *Job) Run(now bool) int {
 		return j.end("skipped", "telegram unreachable", "")
 	}
 	if err := j.backup(pkg, current); err != nil {
-		return j.fail("Backup", err, next, false)
+		return j.fail("Backup", err)
 	}
-	timedOut, resumed, err := j.pauseCI(false)
+	night, err := j.night(j.now())
 	if err != nil {
-		return j.fail("Pause CI", err, next, resumed)
+		return j.local(err)
 	}
-	if timedOut {
-		return j.skip("CI jobs still running", nil)
-	}
-	j.state.LastInstallDate = j.now().Format("2006-01-02")
+	j.state.LastInstallDate = night.Format("2006-01-02")
 	if err := j.save(); err != nil {
 		return j.local(err)
 	}
 	j.say("Installing " + next.Base)
 	if err := j.remote.Step("install", []string{pkg, next.Full}, j.config.Location, j.saveActive); err != nil {
-		return j.fail("Install", err, next, false)
+		return j.fail("Install", err)
 	}
 	if err := gitlab.Installed(j.remote, pkg, next); err != nil {
-		return j.fail("Install", err, next, false)
+		return j.fail("Install", err)
 	}
 	j.say("Installed")
 	if err := j.health(next); err != nil {
-		return j.fail("Check", err, next, false)
+		return j.fail("Check", err)
 	}
 	if _, err := j.remote.Exec(context.Background(), "sudo gitlab-rake gitlab:check SANITIZE=true"); err != nil {
 		j.logf("gitlab:check: " + err.Error())
 	}
 	j.say("GitLab OK")
-	if _, err := j.resumeRunners(); err != nil {
-		return j.fail("CI back on", err, next, true)
-	}
-	j.say("CI back on")
 	if err := j.prune(); err != nil {
 		j.logf("prune: " + err.Error())
 	}
@@ -388,72 +355,6 @@ func (j *Job) backup(pkg string, current gitlab.Version) error {
 	}
 	j.say("Backup done")
 	return nil
-}
-
-func (j *Job) pauseCI(restoring bool) (timedOut, resumeAttempted bool, err error) {
-	ids, err := j.api.Runners(true)
-	if err != nil {
-		if restoring && gitlab.Unavailable(err) {
-			j.logf("restore runner list unavailable: " + err.Error())
-			return false, false, nil
-		}
-		return false, false, err
-	}
-	j.state.AddRunners(ids)
-	if err := j.save(); err != nil {
-		return false, false, err
-	}
-	seen := make(map[int64]bool)
-	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		if err := j.api.SetPaused(id, true); err != nil {
-			return false, false, err
-		}
-	}
-	deadline := time.Now().Add(time.Duration(j.config.Schedule.CIWaitMinutes) * time.Minute)
-	announced := false
-	for {
-		runners, err := j.api.Runners(false)
-		if err != nil {
-			if restoring && gitlab.Unavailable(err) {
-				j.logf("restore runner list unavailable: " + err.Error())
-				return false, false, nil
-			}
-			return false, false, err
-		}
-		count := 0
-		for _, id := range runners {
-			jobs, err := j.api.Jobs(id)
-			if err != nil {
-				return false, false, err
-			}
-			count += jobs
-		}
-		if count == 0 {
-			j.say("CI paused")
-			return false, false, nil
-		}
-		if !announced {
-			j.say(fmt.Sprintf("Waiting for %d CI jobs", count))
-			announced = true
-		}
-		remaining := time.Until(deadline)
-		if remaining > 0 {
-			delay := 30 * time.Second
-			if remaining < delay {
-				delay = remaining
-			}
-			time.Sleep(delay)
-			if time.Now().Before(deadline) {
-				continue
-			}
-		}
-		_, err = j.resumeRunners()
-		return true, true, err
-	}
 }
 
 func (j *Job) prune() error {
@@ -518,7 +419,7 @@ func (j *Job) Restore(yes bool) int {
 		fmt.Println("Run again with --yes to restore.")
 		return 2
 	}
-	failed := func(err error) int { return j.fail("Restore", err, gitlab.Version{}, false) }
+	failed := func(err error) int { return j.fail("Restore", err) }
 	if err := j.connect(true); err != nil {
 		return failed(err)
 	}
@@ -555,13 +456,6 @@ func (j *Job) Restore(yes bool) int {
 		return failed(err)
 	}
 	j.say("Restore started")
-	timedOut, _, err := j.pauseCI(true)
-	if err != nil {
-		return failed(err)
-	}
-	if timedOut {
-		return failed(errors.New("CI jobs still running"))
-	}
 	if err := j.remote.Step("restore", []string{backup.Package, backup.Version, backup.Name, j.config.GitLab.BackupDir, backup.EtcTar}, j.config.Location, j.saveActive); err != nil {
 		return failed(err)
 	}
@@ -569,9 +463,6 @@ func (j *Job) Restore(yes bool) int {
 		return failed(err)
 	}
 	if err := j.health(version); err != nil {
-		return failed(err)
-	}
-	if _, err := j.resumeRunners(); err != nil {
 		return failed(err)
 	}
 	return j.end("done", "restore", "Restore done. Now "+version.Base)
@@ -584,12 +475,11 @@ func (j *Job) Status() int {
 		return 0
 	}
 	view := struct {
-		Stopped       bool         `json:"stopped"`
-		StopReason    string       `json:"stop_reason"`
-		PausedRunners []int64      `json:"paused_runners"`
-		LastBackup    state.Backup `json:"last_backup"`
-		LastRun       state.Run    `json:"last_run"`
-	}{localState.Stopped, localState.StopReason, localState.PausedRunners, localState.LastBackup, localState.LastRun}
+		Stopped    bool         `json:"stopped"`
+		StopReason string       `json:"stop_reason"`
+		LastBackup state.Backup `json:"last_backup"`
+		LastRun    state.Run    `json:"last_run"`
+	}{localState.Stopped, localState.StopReason, localState.LastBackup, localState.LastRun}
 	encoded, err := json.MarshalIndent(view, "", "  ")
 	if err != nil {
 		fmt.Println(err)
@@ -653,14 +543,6 @@ func (j *Job) Resume() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	failed, err := j.resumeRunners()
-	if len(failed) > 0 {
-		fmt.Printf("Could not resume runners: %v\n", failed)
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, j.redact(err.Error()))
-		return 1
-	}
 	j.state.Stopped = false
 	j.state.StopReason = ""
 	if err := j.save(); err != nil {
@@ -701,7 +583,6 @@ func (j *Job) Test() int {
 	}
 	_, err = gitlab.Stops()
 	report("Stops file", err)
-	report("Runners", j.api.TestRunners())
 	report("Telegram", j.say("usm test message"))
 	if failed {
 		return 1

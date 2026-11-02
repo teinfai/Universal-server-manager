@@ -26,13 +26,12 @@ type Run struct {
 }
 
 type State struct {
-	Stopped         bool    `json:"stopped"`
-	StopReason      string  `json:"stop_reason"`
-	PausedRunners   []int64 `json:"paused_runners"`
-	LastBackup      Backup  `json:"last_backup"`
-	LastRun         Run     `json:"last_run"`
-	ActiveStep      string  `json:"active_step"`
-	LastInstallDate string  `json:"last_install_date"`
+	Stopped         bool   `json:"stopped"`
+	StopReason      string `json:"stop_reason"`
+	LastBackup      Backup `json:"last_backup"`
+	LastRun         Run    `json:"last_run"`
+	ActiveStep      string `json:"active_step"`
+	LastInstallDate string `json:"last_install_date"`
 }
 
 var ErrLocked = errors.New("lock already held")
@@ -53,7 +52,7 @@ func Lock(dir string) (*os.File, error) {
 }
 
 func Load(dir string) (*State, error) {
-	s := &State{PausedRunners: []int64{}}
+	s := &State{}
 	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -72,9 +71,6 @@ func Load(dir string) (*State, error) {
 	var extra any
 	if err := d.Decode(&extra); err != io.EOF {
 		return nil, errors.New("unexpected data after state")
-	}
-	if s.PausedRunners == nil {
-		s.PausedRunners = []int64{}
 	}
 	return s, nil
 }
@@ -100,27 +96,4 @@ func Save(dir string, s *State) error {
 		return fmt.Errorf("save state: %w", err)
 	}
 	return nil
-}
-
-func (s *State) AddRunners(ids []int64) {
-	seen := make(map[int64]bool)
-	for _, id := range s.PausedRunners {
-		seen[id] = true
-	}
-	for _, id := range ids {
-		if !seen[id] {
-			s.PausedRunners = append(s.PausedRunners, id)
-			seen[id] = true
-		}
-	}
-}
-
-func (s *State) RemoveRunner(id int64) {
-	kept := s.PausedRunners[:0]
-	for _, existing := range s.PausedRunners {
-		if existing != id {
-			kept = append(kept, existing)
-		}
-	}
-	s.PausedRunners = kept
 }

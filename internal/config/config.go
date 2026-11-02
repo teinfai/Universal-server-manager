@@ -36,9 +36,8 @@ type Config struct {
 		ChatID   string `yaml:"chat_id"`
 	} `yaml:"telegram"`
 	Schedule struct {
-		Timezone      string `yaml:"timezone"`
-		LatestStart   string `yaml:"latest_start"`
-		CIWaitMinutes int    `yaml:"ci_wait_minutes"`
+		Timezone string `yaml:"timezone"`
+		Start    string `yaml:"start"`
 	} `yaml:"schedule"`
 	StateDir string         `yaml:"state_dir"`
 	LogDir   string         `yaml:"log_dir"`
@@ -46,16 +45,16 @@ type Config struct {
 }
 
 var patterns = map[string]*regexp.Regexp{
-	"package":      regexp.MustCompile(`^gitlab-(ce|ee)$`),
-	"version":      regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+-(ce|ee)\.[0-9]+$`),
-	"backup name":  regexp.MustCompile(`^usm-[0-9]{8}-[0-9]{6}-[0-9]+\.[0-9]+\.[0-9]+$`),
-	"backup dir":   regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`),
-	"etc tar":      regexp.MustCompile(`^/[A-Za-z0-9._/-]+/gitlab_config_[0-9_]+\.tar$`),
-	"etc file":     regexp.MustCompile(`^gitlab_config_[0-9_]+\.tar$`),
-	"step id":      regexp.MustCompile(`^(backup|install|restore)-[0-9]{14}-[0-9a-f]{8}$`),
-	"action":       regexp.MustCompile(`^(backup|install|restore)$`),
-	"digits":       regexp.MustCompile(`^[0-9]+$`),
-	"latest_start": regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`),
+	"package":     regexp.MustCompile(`^gitlab-(ce|ee)$`),
+	"version":     regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+-(ce|ee)\.[0-9]+$`),
+	"backup name": regexp.MustCompile(`^usm-[0-9]{8}-[0-9]{6}-[0-9]+\.[0-9]+\.[0-9]+$`),
+	"backup dir":  regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`),
+	"etc tar":     regexp.MustCompile(`^/[A-Za-z0-9._/-]+/gitlab_config_[0-9_]+\.tar$`),
+	"etc file":    regexp.MustCompile(`^gitlab_config_[0-9_]+\.tar$`),
+	"step id":     regexp.MustCompile(`^(backup|install|restore)-[0-9]{14}-[0-9a-f]{8}$`),
+	"action":      regexp.MustCompile(`^(backup|install|restore)$`),
+	"digits":      regexp.MustCompile(`^[0-9]+$`),
+	"start":       regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`),
 }
 
 func Validate(kind, value string) error {
@@ -90,7 +89,7 @@ func Load(path string) (*Config, error) {
 	for _, field := range []string{
 		"server_name", "ssh.host", "ssh.port", "ssh.user", "ssh.key_file", "ssh.known_hosts_file",
 		"gitlab.url", "gitlab.token", "gitlab.backup_dir", "telegram.bot_token", "telegram.chat_id",
-		"schedule.timezone", "schedule.latest_start", "schedule.ci_wait_minutes", "state_dir", "log_dir",
+		"schedule.timezone", "schedule.start", "state_dir", "log_dir",
 	} {
 		if !present(&document, strings.Split(field, ".")) {
 			return nil, fmt.Errorf("missing field: %s", field)
@@ -109,13 +108,10 @@ func Load(path string) (*Config, error) {
 	if c.SSH.Port < 1 || c.SSH.Port > 65535 {
 		return nil, errors.New("invalid ssh.port")
 	}
-	if c.Schedule.CIWaitMinutes < 0 || int64(c.Schedule.CIWaitMinutes) > int64((1<<63-1)/time.Minute) {
-		return nil, errors.New("invalid schedule.ci_wait_minutes")
-	}
 	if err := Validate("backup dir", c.GitLab.BackupDir); err != nil {
 		return nil, fmt.Errorf("gitlab.backup_dir: %w", err)
 	}
-	if err := Validate("latest_start", c.Schedule.LatestStart); err != nil {
+	if err := Validate("start", c.Schedule.Start); err != nil {
 		return nil, err
 	}
 	c.Location, err = time.LoadLocation(c.Schedule.Timezone)

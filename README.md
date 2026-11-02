@@ -1,6 +1,6 @@
 # Universal Server Manager (USM)
 
-USM keeps your GitLab up to date by itself. Every night at 02:00 it backs up
+USM keeps your GitLab up to date by itself. Every night, at a time you pick, it backs up
 GitLab, installs the next version, checks that GitLab still works, and sends
 each step to your Telegram group.
 
@@ -10,11 +10,11 @@ It works with GitLab installed with apt on Ubuntu or Debian (amd64 or arm64).
 
 Get these three things ready:
 
-1. **GitLab admin token.** Sign in to GitLab as an admin. Select your avatar,
-   then **Edit profile**, then **Personal access tokens** (older GitLab:
-   **Access tokens**). Add a new token with the `api` scope. If GitLab asks
-   for a token type, pick **Legacy token**. Copy the token now; GitLab shows
-   it only once.
+1. **GitLab token.** Sign in to GitLab with any account. Select your
+   avatar, then **Edit profile**, then **Personal access tokens**
+   (older GitLab: **Access tokens**). Add a new token with the
+   `read_api` scope. If GitLab asks for a token type, pick
+   **Legacy token**. Copy the token now; GitLab shows it only once.
 2. **Telegram bot token.** In Telegram, open
    [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the
    steps. Copy the token it gives you.
@@ -40,9 +40,10 @@ Most questions show a default in `[brackets]`. Press Enter to use it. You
 only need to type:
 
 - your GitLab web address, like `https://gitlab.example.com`
-- the GitLab admin token
+- the GitLab token
 - the Telegram bot token
 - the Telegram group ID
+- the update time in 24-hour format, like `23:30` (or press Enter for `02:00`)
 
 At the end, USM sends a test message to your Telegram group. If you see it,
 you are done.
@@ -52,14 +53,16 @@ The installer then shows a few commands to run on the GitLab server. SSH must
 be on, on the GitLab server. USM uses SSH even when it runs on the same
 server.
 
-## What it does each night
+## What it does every night
 
 1. Backs up GitLab and its settings.
-2. Pauses CI and waits for running jobs to finish.
-3. Installs the next version on GitLab's official upgrade path. One version
-   per night.
-4. Checks that GitLab works, then turns CI back on.
-5. Deletes older USM backups.
+2. Installs the next version on GitLab's official upgrade path. One
+   version per night.
+3. Checks that GitLab works.
+4. Deletes older USM backups.
+
+USM does not pause CI. GitLab restarts during the update, so pick a
+time when nobody runs CI jobs.
 
 ## If something goes wrong
 
@@ -75,7 +78,7 @@ server.
 |---|---|
 | `sudo -u usm usm status` | Shows the installed version and the upgrade path. |
 | `sudo -u usm usm test` | Checks every connection and sends a test message. |
-| `sudo -u usm usm run --now` | Updates one version now, without waiting for 02:00. |
+| `sudo -u usm usm run --now` | Updates one version now, without waiting for the update time. |
 | `sudo -u usm usm resume` | Starts the nightly updates again after a stop. |
 | `sudo -u usm usm restore --yes` | Puts back the last backup and the version before it. |
 
