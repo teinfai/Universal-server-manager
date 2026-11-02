@@ -53,8 +53,9 @@ server.
 2. Installs the next version on GitLab's official upgrade path. One
    version per night.
 3. Checks that GitLab works.
-4. Deletes the backup to save disk space. If the update fails, the
-   backup stays so you can restore it.
+4. Deletes the backup to save disk space. If the update fails, USM
+   puts the backup back by itself, then stops and tells your
+   Telegram group.
 
 USM does not pause CI. GitLab restarts during the update, so pick a
 time when nobody runs CI jobs.
@@ -63,8 +64,10 @@ time when nobody runs CI jobs.
 
 - If a step fails, USM stops and tells your Telegram group. Fix the problem,
   then run `sudo -u usm usm resume`.
-- If an update fails, `sudo -u usm usm restore --yes` puts back the
-  backup from before it. Then run `sudo -u usm usm resume`.
+- If an update fails, USM goes back to the backup by itself and stops.
+  Check GitLab, then run `sudo -u usm usm resume`. If going back
+  also fails, the backup stays, and you can try again with
+  `sudo -u usm usm restore --yes`.
 - Logs are in `/var/log/usm`.
 
 ## Commands
@@ -82,7 +85,8 @@ time when nobody runs CI jobs.
 - Before each update, USM checks there is enough free disk for a
   backup. If not, it skips that night and tells your Telegram group
   how much space it needs. `usm test` checks this too.
-- USM never undoes an update by itself. Only `restore --yes` does that.
+- If an update fails, USM restores the backup by itself. It never touches
+  GitLab after a good update.
 - The backup does not include object storage or an outside database. Back
   those up yourself.
 - USM checks GitLab with GitLab's own readiness check, run on the GitLab

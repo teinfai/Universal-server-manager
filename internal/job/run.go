@@ -160,12 +160,6 @@ func (j *Job) fail(action string, cause error) int {
 	switch action {
 	case "Backup":
 		message = "Failed at " + action + ". Nothing changed.\nWhen fixed: usm resume"
-	case "Install", "Check":
-		backupTime, err := time.Parse(time.RFC3339, j.state.LastBackup.Time)
-		if err != nil {
-			return j.local(&localError{"state file", err})
-		}
-		message = "Failed at " + action + ". GitLab may be down.\nBackup " + backupTime.In(j.config.Location).Format("15:04") + " is safe.\nTo go back: usm restore"
 	case "Restore":
 		message = "Restore failed. Check by hand."
 	}
@@ -174,6 +168,67 @@ func (j *Job) fail(action string, cause error) int {
 	detail := message
 	if action == "Restore" {
 		detail = "restore: " + cause.Error()
+	}
+	return j.end("failed", detail, message)
+}
+
+func (j *Job) undo(action string, cause error) int {
+	var local *localError
+	if errors.As(cause, &local) {
+		return j.local(cause)
+	}
+	j.logf(cause.Error())
+	backupTime, err := time.Parse(time.RFC3339, j.state.LastBackup.Time)
+	if err != nil {
+		return j.local(&localError{"state file", err})
+	}
+	backupVersion, err := gitlab.ParseVersion(j.state.LastBackup.Version)
+	if err != nil {
+		return j.local(&localError{"state file", err})
+	}
+	base := backupVersion.Base
+	backupHHMM := backupTime.In(j.config.Location).Format("15:04")
+	j.state.Stopped = true
+	j.state.StopReason = "Failed at " + action
+	if checkErr := j.restoreCheck(); checkErr != nil {
+		j.logf(checkErr.Error())
+		message := "Failed at " + action + ". Did not go back: the update may still be running.\nBackup " + backupHHMM + " is safe. Check by hand."
+		return j.end("failed", "restore: "+checkErr.Error(), message)
+	}
+	if action == "Install" {
+		_, version, err := gitlab.Package(j.remote)
+		if err == nil && version.Full == j.state.LastBackup.Version && j.health() == nil {
+			j.state.LastBackup = state.Backup{}
+			if err := j.save(); err != nil {
+				return j.local(err)
+			}
+			if err := j.prune(); err != nil {
+				j.logf("prune: " + err.Error())
+			}
+			message := "Failed at Install. Nothing changed, GitLab is still " + base + ".\nUpdates stopped. When checked: usm resume"
+			return j.end("failed", message, message)
+		}
+	}
+	j.say("Failed at " + action + ". Going back to " + base + ".")
+	_, restoreErr := j.restoreBackup()
+	message := "Went back to " + base + ". GitLab OK.\nUpdates stopped. When checked: usm resume"
+	detail := message
+	if restoreErr == nil {
+		j.state.LastBackup = state.Backup{}
+		if err := j.save(); err != nil {
+			return j.local(err)
+		}
+		if err := j.prune(); err != nil {
+			j.logf("prune: " + err.Error())
+		}
+	} else {
+		j.logf(restoreErr.Error())
+		if errors.Is(restoreErr, errStepRunning) || errors.Is(restoreErr, errStepUnknown) {
+			message = "Did not go back: the update may still be running.\nBackup " + backupHHMM + " is safe. Check by hand."
+		} else {
+			message = "Going back failed. GitLab may be down.\nBackup " + backupHHMM + " is safe. Check by hand."
+		}
+		detail = "restore: " + restoreErr.Error()
 	}
 	return j.end("failed", detail, message)
 }
@@ -290,14 +345,14 @@ func (j *Job) Run(now bool) int {
 	}
 	j.say("Installing " + next.Base)
 	if err := j.remote.Step("install", []string{pkg, next.Full}, j.config.Location, j.saveActive); err != nil {
-		return j.fail("Install", err)
+		return j.undo("Install", err)
 	}
 	if err := gitlab.Installed(j.remote, pkg, next); err != nil {
-		return j.fail("Install", err)
+		return j.undo("Install", err)
 	}
 	j.say("Installed")
 	if err := j.health(); err != nil {
-		return j.fail("Check", err)
+		return j.undo("Check", err)
 	}
 	if _, err := j.remote.Exec(context.Background(), "sudo gitlab-rake gitlab:check SANITIZE=true"); err != nil {
 		j.logf("gitlab:check: " + err.Error())
@@ -317,10 +372,21 @@ func (j *Job) Run(now bool) int {
 }
 
 func (j *Job) health() error {
-	if err := gitlab.Services(j.remote); err != nil {
-		return err
+	deadline := time.Now().Add(10 * time.Minute)
+	for {
+		err := gitlab.Services(j.remote)
+		if err == nil {
+			err = gitlab.Ready(j.remote, j.config.GitLab.URL)
+		}
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		j.logf("waiting for GitLab: " + err.Error())
+		time.Sleep(15 * time.Second)
 	}
-	return gitlab.Ready(j.remote, j.config.GitLab.URL)
 }
 
 func (j *Job) backup(pkg string, current gitlab.Version) error {
@@ -398,6 +464,56 @@ func (j *Job) prune() error {
 	return nil
 }
 
+var (
+	errStepRunning = errors.New("a step is still running on GitLab")
+	errStepUnknown = errors.New("cannot read the last step on GitLab")
+)
+
+func (j *Job) restoreCheck() error {
+	if j.state.ActiveStep == "" {
+		return nil
+	}
+	pollCtx, pollCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	output, err := j.remote.Poll(pollCtx, j.state.ActiveStep)
+	pollCancel()
+	if err != nil {
+		return fmt.Errorf("%w: %v", errStepUnknown, err)
+	}
+	if output == "running" {
+		return errStepRunning
+	}
+	if !remote.Terminal(output) {
+		return errStepUnknown
+	}
+	return j.saveActive("")
+}
+
+func (j *Job) restoreBackup() (gitlab.Version, error) {
+	backup := j.state.LastBackup
+	for _, value := range []struct{ kind, text string }{
+		{"package", backup.Package}, {"version", backup.Version}, {"backup name", backup.Name},
+		{"backup dir", j.config.GitLab.BackupDir}, {"etc tar", backup.EtcTar},
+	} {
+		if err := config.Validate(value.kind, value.text); err != nil {
+			return gitlab.Version{}, err
+		}
+	}
+	version, err := gitlab.ParseVersion(backup.Version)
+	if err != nil {
+		return gitlab.Version{}, err
+	}
+	if err := j.remote.Step("restore", []string{backup.Package, backup.Version, backup.Name, j.config.GitLab.BackupDir, backup.EtcTar}, j.config.Location, j.saveActive); err != nil {
+		return gitlab.Version{}, err
+	}
+	if err := gitlab.Installed(j.remote, backup.Package, version); err != nil {
+		return version, err
+	}
+	if err := j.health(); err != nil {
+		return version, err
+	}
+	return version, nil
+}
+
 func (j *Job) Restore(yes bool) int {
 	if yes {
 		if err := j.openLog(); err != nil {
@@ -433,46 +549,18 @@ func (j *Job) Restore(yes bool) int {
 	if err := j.connect(true); err != nil {
 		return failed(err)
 	}
-	if j.state.ActiveStep != "" {
-		id := j.state.ActiveStep
-		pollCtx, pollCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		output, err := j.remote.Poll(pollCtx, id)
-		pollCancel()
-		if err != nil || (!remote.Terminal(output) && output != "running") {
-			if err != nil {
-				j.logf(err.Error())
-			}
-			fmt.Printf("Cannot read the last step on GitLab: %s.\n", id)
+	if err := j.restoreCheck(); err != nil {
+		if errors.Is(err, errStepRunning) {
+			fmt.Printf("A step is still running on GitLab: %s. Wait for it.\n", j.state.ActiveStep)
 			return 2
 		}
-		if output == "running" {
-			fmt.Printf("A step is still running on GitLab: %s. Wait for it.\n", id)
-			return 2
-		}
-		if err := j.saveActive(""); err != nil {
-			return j.local(err)
-		}
-	}
-	for _, value := range []struct{ kind, text string }{
-		{"package", backup.Package}, {"version", backup.Version}, {"backup name", backup.Name},
-		{"backup dir", j.config.GitLab.BackupDir}, {"etc tar", backup.EtcTar},
-	} {
-		if err := config.Validate(value.kind, value.text); err != nil {
-			return failed(err)
-		}
-	}
-	version, err := gitlab.ParseVersion(backup.Version)
-	if err != nil {
-		return failed(err)
+		j.logf(err.Error())
+		fmt.Printf("Cannot read the last step on GitLab: %s.\n", j.state.ActiveStep)
+		return 2
 	}
 	j.say("Restore started")
-	if err := j.remote.Step("restore", []string{backup.Package, backup.Version, backup.Name, j.config.GitLab.BackupDir, backup.EtcTar}, j.config.Location, j.saveActive); err != nil {
-		return failed(err)
-	}
-	if err := gitlab.Installed(j.remote, backup.Package, version); err != nil {
-		return failed(err)
-	}
-	if err := j.health(); err != nil {
+	version, err := j.restoreBackup()
+	if err != nil {
 		return failed(err)
 	}
 	return j.end("done", "restore", "Restore done. Now "+version.Base)
