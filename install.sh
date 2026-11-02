@@ -71,6 +71,7 @@ ask() {
 ask_timezone() {
     local default_timezone
     default_timezone=$(timedatectl show -p Timezone --value)
+    valid_timezone "$default_timezone" || default_timezone=UTC
     if ! valid_timezone "$default_timezone"; then
         printf 'Invalid system time zone.\n'
         exit 1
@@ -86,7 +87,7 @@ if [[ ${1:-} == --uninstall ]]; then
     ask 'Also delete settings, state and logs? [y/N]' N '^[yNn]$'
     if [[ $answer == y ]]; then
         rm -rf /etc/usm /var/lib/usm /var/log/usm
-        userdel usm
+        userdel usm || true
     fi
     printf '%s\n' 'Run these on the GitLab server:' \
         'userdel -r usm' \
@@ -136,7 +137,7 @@ if [[ $keep_settings == false ]]; then
     ssh_port=$answer
     ask 'GitLab web address' '' '^https?://[A-Za-z0-9.:-]+/?$'
     gitlab_url=${answer%/}
-    ask 'GitLab admin token (input hidden)' '' '^[A-Za-z0-9_-]{20,}$' secret
+    ask 'GitLab admin token (input hidden)' '' '^[A-Za-z0-9._-]{20,}$' secret
     gitlab_token=$answer
     ask 'Telegram bot token (input hidden)' '' '^[0-9]+:[A-Za-z0-9_-]+$' secret
     telegram_bot_token=$answer

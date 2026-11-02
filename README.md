@@ -1,4 +1,4 @@
-# Universal-server-manager
+# Universal Server Manager (USM)
 
 Install on the jump server:
 
@@ -27,8 +27,10 @@ bypasses the latest start time and the one-install-per-day guard.
 - A GitLab Linux package on Ubuntu or Debian, with its apt repository set up.
 - A Linux jump server with systemd, SSH access to GitLab, access to GitLab's
   API, and outbound HTTPS to `gitlab.com` and `api.telegram.org`.
-- Go 1.27 to build the program. The GitLab server also needs systemd for
-  update steps that keep running if SSH disconnects.
+- systemd on the GitLab server, so update steps keep running if SSH
+  disconnects.
+- Go 1.27, only for the manual install. The one-line install downloads a
+  ready-built binary from the latest GitHub release.
 
 ## Manual install
 
@@ -186,3 +188,11 @@ gitlab-ctl restart
 Check that the installed package and GitLab API report the recorded version
 and that GitLab's services are running. Resume the runners you paused, then
 run `sudo -u usm usm resume` on the jump server to clear USM's stop flag.
+
+## License
+
+USM is free and open source under the [MIT License](LICENSE).
+Copyright (c) 2026 teinfai.
+
+USM comes with no warranty. It changes a live GitLab server, so try it on a
+test copy first and keep your own backups.
