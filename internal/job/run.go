@@ -95,7 +95,7 @@ func (j *Job) local(err error) int {
 	}
 	fmt.Fprintln(os.Stderr, j.redact(failure.Error()))
 	j.logf(failure.Error())
-	j.say("usm local error: " + failure.kind + ". Check the jump server.")
+	j.say("usm local error: " + failure.kind + ". Check the USM log.")
 	return 1
 }
 

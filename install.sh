@@ -84,12 +84,13 @@ if [[ ${1:-} == --uninstall ]]; then
     systemctl disable --now usm.timer || true
     rm -f /etc/systemd/system/usm.service /etc/systemd/system/usm.timer /usr/local/bin/usm
     systemctl daemon-reload
-    ask 'Also delete settings, state and logs? [y/N]' N '^[yNn]$'
-    if [[ $answer == y ]]; then
+    rm -f /etc/sudoers.d/usm /usr/local/sbin/usm-step.sh
+    ask 'Also delete settings, state and logs? [y/N]' N '^[YyNn]$'
+    if [[ $answer == [Yy] ]]; then
         rm -rf /etc/usm /var/lib/usm /var/log/usm
         userdel usm || true
     fi
-    printf '%s\n' 'Run these on the GitLab server:' \
+    printf '%s\n' 'If GitLab is on another server, run these there:' \
         'userdel -r usm' \
         'rm -f /etc/sudoers.d/usm /usr/local/sbin/usm-step.sh'
     exit 0
@@ -122,8 +123,8 @@ install -d -o usm -g usm -m 0750 /var/lib/usm /var/log/usm
 
 keep_settings=false
 if [[ -e /etc/usm/config.yaml ]]; then
-    ask 'Keep current settings? [Y/n]' Y '^[Yn]$'
-    if [[ $answer == Y ]]; then
+    ask 'Keep current settings? [Y/n]' Y '^[YyNn]$'
+    if [[ $answer == [Yy] ]]; then
         keep_settings=true
     fi
 fi
@@ -131,17 +132,23 @@ fi
 if [[ $keep_settings == false ]]; then
     ask 'Name for this GitLab server [gitlab]' gitlab '^[A-Za-z0-9._-]{1,40}$'
     server_name=$answer
-    ask 'GitLab server address (IP or host name)' '' '^[A-Za-z0-9.-]+$'
-    ssh_host=$answer
+    ask 'Is GitLab on this server? [Y/n]' Y '^[YyNn]$'
+    same_server=$answer
+    if [[ $same_server == [Yy] ]]; then
+        ssh_host=127.0.0.1
+    else
+        ask 'GitLab server address (IP or host name)' '' '^[A-Za-z0-9.-]+$'
+        ssh_host=$answer
+    fi
     ask 'SSH port [22]' 22 '^[0-9]{1,5}$' port
     ssh_port=$answer
-    ask 'GitLab web address' '' '^https?://[A-Za-z0-9.:-]+/?$'
+    ask 'GitLab web address (like https://gitlab.example.com)' '' '^https?://[A-Za-z0-9.:-]+/?$'
     gitlab_url=${answer%/}
     ask 'GitLab admin token (input hidden)' '' '^[A-Za-z0-9._-]{20,}$' secret
     gitlab_token=$answer
     ask 'Telegram bot token (input hidden)' '' '^[0-9]+:[A-Za-z0-9_-]+$' secret
     telegram_bot_token=$answer
-    ask 'Telegram group ID' '' '^-?[0-9]+$'
+    ask 'Telegram group ID (like -1001234567890)' '' '^-?[0-9]+$'
     telegram_chat_id=$answer
     ask_timezone
     ask 'Backup folder on the GitLab server [/var/opt/gitlab/backups]' /var/opt/gitlab/backups '^/[A-Za-z0-9._/-]+$'
@@ -163,7 +170,19 @@ if [[ $keep_settings == false ]]; then
         exit 1
     fi
     public_key=${public_key_lines[0]}
-    cat <<EOF
+    if [[ $same_server == [Yy] ]]; then
+        usm_home=$(getent passwd usm | cut -d: -f6)
+        if [[ ! $usm_home =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            printf 'Unexpected home folder for usm.\n'
+            exit 1
+        fi
+        usermod --shell /bin/bash usm
+        install -d -o usm -g usm -m 0700 "$usm_home/.ssh"
+        install -o usm -g usm -m 0600 /etc/usm/id_ed25519.pub "$usm_home/.ssh/authorized_keys"
+        printf '%s\n' 'usm ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/usm
+        chmod 0440 /etc/sudoers.d/usm
+    else
+        cat <<EOF
 Run these on the GitLab server:
 sudo useradd --create-home --shell /bin/bash usm
 sudo install -d -o usm -g usm -m 0700 /home/usm/.ssh
@@ -173,16 +192,21 @@ sudo chmod 0600 /home/usm/.ssh/authorized_keys
 echo 'usm ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/usm
 sudo chmod 0440 /etc/sudoers.d/usm
 EOF
-    ask 'Press Enter when done' '' '^$'
+        ask 'Press Enter when done' '' '^$'
+    fi
 
     if ! ssh-keyscan -p "$ssh_port" -- "$ssh_host" > /etc/usm/known_hosts || [[ ! -s /etc/usm/known_hosts ]]; then
         printf 'Cannot reach %s:%s.\n' "$ssh_host" "$ssh_port"
         exit 1
     fi
-    ssh-keygen -lf /etc/usm/known_hosts
-    printf "%s " "Is this the GitLab server's key? [y/N]" > /dev/tty
-    IFS= read -r answer < /dev/tty
-    [[ $answer == y ]] || exit 1
+    if [[ $same_server != [Yy] ]]; then
+        ssh-keygen -lf /etc/usm/known_hosts
+        ask "Is this the GitLab server's key? [y/N]" N '^[YyNn]$'
+        if [[ $answer != [Yy] ]]; then
+            printf 'Stopped. The key was not confirmed.\n'
+            exit 1
+        fi
+    fi
     chown usm:usm /etc/usm/known_hosts
 
     install -o usm -g usm -m 0600 /dev/null /etc/usm/config.yaml
