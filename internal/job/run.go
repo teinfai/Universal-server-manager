@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -402,7 +403,7 @@ func (j *Job) backup(pkg string, current gitlab.Version) error {
 	if err := j.remote.Step("backup", []string{name, dir}, j.config.Location, j.saveActive); err != nil {
 		return err
 	}
-	if _, err := j.remote.Exec(context.Background(), "sudo test -s "+dir+"/"+name+"_gitlab_backup.tar"); err != nil {
+	if _, err := j.remote.Exec(context.Background(), "sudo test -s "+dir+"/backup_information.yml"); err != nil {
 		return err
 	}
 	output, err := j.remote.Exec(context.Background(), "sudo ls -1 "+dir+"/"+name+"-etc")
@@ -433,6 +434,8 @@ func (j *Job) backup(pkg string, current gitlab.Version) error {
 	return nil
 }
 
+var untarredBackupFile = regexp.MustCompile(`^(backup_information\.yml|[a-z_]+\.tar\.gz)$`)
+
 func (j *Job) prune() error {
 	dir := j.config.GitLab.BackupDir
 	if err := config.Validate("backup dir", dir); err != nil {
@@ -448,13 +451,20 @@ func (j *Job) prune() error {
 		case strings.HasSuffix(entry, "_gitlab_backup.tar"):
 			name = strings.TrimSuffix(entry, "_gitlab_backup.tar")
 			command = "sudo rm -f "
+			if config.Validate("backup name", name) != nil {
+				continue
+			}
 		case strings.HasSuffix(entry, "-etc"):
 			name = strings.TrimSuffix(entry, "-etc")
 			command = "sudo rm -rf "
+			if config.Validate("backup name", name) != nil {
+				continue
+			}
+		case entry == "db" || entry == "repositories":
+			command = "sudo rm -rf "
+		case untarredBackupFile.MatchString(entry):
+			command = "sudo rm -f "
 		default:
-			continue
-		}
-		if config.Validate("backup name", name) != nil {
 			continue
 		}
 		if _, err := j.remote.Exec(context.Background(), command+dir+"/"+entry); err != nil {

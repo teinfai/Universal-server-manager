@@ -43,7 +43,7 @@ trap 'printf "%s\n" "$?" >"/var/lib/usm/$id.status"' EXIT
 
 case "$action" in
   backup)
-    gitlab-backup create "BACKUP=$name"
+    gitlab-backup create SKIP=tar
     mkdir -p "$dir/$name-etc"
     gitlab-ctl backup-etc --backup-path "$dir/$name-etc"
     ;;
@@ -53,6 +53,7 @@ case "$action" in
     apt-mark hold "$pkg"
     ;;
   restore)
+    [[ -s "$dir/backup_information.yml" && -d "$dir/$name-etc" ]] || exit 65
     gitlab-ctl stop puma
     gitlab-ctl stop sidekiq
     apt-mark unhold "$pkg" || true
@@ -64,7 +65,7 @@ case "$action" in
     gitlab-ctl reconfigure
     gitlab-ctl stop puma
     gitlab-ctl stop sidekiq
-    GITLAB_ASSUME_YES=1 gitlab-backup restore "BACKUP=$name"
+    GITLAB_ASSUME_YES=1 gitlab-backup restore
     gitlab-ctl reconfigure
     gitlab-ctl restart
     ;;
