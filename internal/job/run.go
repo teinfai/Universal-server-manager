@@ -257,7 +257,11 @@ func (j *Job) Run(now bool) int {
 		return j.skip("upgrade path list not reachable", err)
 	}
 	if err := gitlab.Disk(j.remote, j.config.GitLab.BackupDir); err != nil {
-		return j.skip("not enough disk space", err)
+		var low *gitlab.LowDisk
+		if errors.As(err, &low) {
+			return j.skip("not enough disk space. Need "+low.Text(), nil)
+		}
+		return j.skip("cannot read disk space", err)
 	}
 	path, err := gitlab.Path(current, versions, stops)
 	if err != nil {
@@ -300,8 +304,15 @@ func (j *Job) Run(now bool) int {
 		j.logf("gitlab:check: " + err.Error())
 	}
 	j.say("GitLab OK")
+	j.state.LastBackup = state.Backup{}
+	if err := j.save(); err != nil {
+		return j.local(err)
+	}
 	if err := j.prune(); err != nil {
 		j.logf("prune: " + err.Error())
+		j.say("Backup not deleted. Check the USM log.")
+	} else {
+		j.say("Backup deleted")
 	}
 	return j.end("done", "", "Done. Now "+next.Base)
 }
@@ -378,7 +389,7 @@ func (j *Job) prune() error {
 		default:
 			continue
 		}
-		if config.Validate("backup name", name) != nil || name == j.state.LastBackup.Name {
+		if config.Validate("backup name", name) != nil {
 			continue
 		}
 		if _, err := j.remote.Exec(context.Background(), command+dir+"/"+entry); err != nil {
@@ -410,7 +421,7 @@ func (j *Job) Restore(yes bool) int {
 	}
 	backup := j.state.LastBackup
 	if backup.Name == "" {
-		fmt.Println("No backup recorded.")
+		fmt.Println("No backup to restore. USM deletes the backup after a good update.")
 		return 2
 	}
 	if !yes {
@@ -576,6 +587,7 @@ func (j *Job) Test() int {
 	_, current, packageErr := gitlab.Package(j.remote)
 	report("Package", packageErr)
 	report("Services", gitlab.Services(j.remote))
+	report("Disk space", gitlab.Disk(j.remote, j.config.GitLab.BackupDir))
 	if packageErr != nil {
 		report("API and version", errors.New("installed version is unavailable"))
 	} else {

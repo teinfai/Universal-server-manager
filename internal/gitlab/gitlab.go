@@ -329,6 +329,17 @@ func Stops() ([]Stop, error) {
 	return stops, nil
 }
 
+type LowDisk struct{ Need, Free *big.Int }
+
+func (e *LowDisk) Error() string { return "need " + e.Text() }
+
+func (e *LowDisk) Text() string { return gb(e.Need) + " GB free, have " + gb(e.Free) + " GB" }
+
+func gb(bytes *big.Int) string {
+	f := new(big.Float).Quo(new(big.Float).SetInt(bytes), big.NewFloat(1073741824))
+	return f.Text('f', 1)
+}
+
 func byteCount(text string) (*big.Int, error) {
 	if err := config.Validate("digits", text); err != nil {
 		return nil, err
@@ -383,7 +394,7 @@ func Disk(r *remote.Client, dir string) error {
 		return errors.New("backup size exceeds GitLab size")
 	}
 	if free.Cmp(used) <= 0 {
-		return errors.New("free bytes do not exceed used bytes")
+		return &LowDisk{Need: used, Free: free}
 	}
 	return nil
 }

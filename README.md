@@ -59,7 +59,8 @@ server.
 2. Installs the next version on GitLab's official upgrade path. One
    version per night.
 3. Checks that GitLab works.
-4. Deletes older USM backups.
+4. Deletes the backup to save disk space. If the update fails, the
+   backup stays so you can restore it.
 
 USM does not pause CI. GitLab restarts during the update, so pick a
 time when nobody runs CI jobs.
@@ -68,8 +69,8 @@ time when nobody runs CI jobs.
 
 - If a step fails, USM stops and tells your Telegram group. Fix the problem,
   then run `sudo -u usm usm resume`.
-- To go back to the last backup, run `sudo -u usm usm restore --yes`. Then
-  run `sudo -u usm usm resume`.
+- If an update fails, `sudo -u usm usm restore --yes` puts back the
+  backup from before it. Then run `sudo -u usm usm resume`.
 - Logs are in `/var/log/usm`.
 
 ## Commands
@@ -80,16 +81,19 @@ time when nobody runs CI jobs.
 | `sudo -u usm usm test` | Checks every connection and sends a test message. |
 | `sudo -u usm usm run --now` | Updates one version now, without waiting for the update time. |
 | `sudo -u usm usm resume` | Starts the nightly updates again after a stop. |
-| `sudo -u usm usm restore --yes` | Puts back the last backup and the version before it. |
+| `sudo -u usm usm restore --yes` | Puts back the backup from a failed update. |
 
 ## Good to know
 
+- Before each update, USM checks there is enough free disk for a
+  backup. If not, it skips that night and tells your Telegram group
+  how much space it needs. `usm test` checks this too.
 - GitLab tokens expire, after 365 days by default. Before yours does, make a
   new one and run the install line again. Answer `n` to
   `Keep current settings?`.
 - USM never undoes an update by itself. Only `restore --yes` does that.
-- The backup does not include object storage, the container registry or an
-  outside database. Back those up yourself.
+- The backup does not include object storage or an outside database. Back
+  those up yourself.
 
 ## Uninstall
 
