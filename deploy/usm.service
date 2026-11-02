@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly GitLab upgrade
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=usm
+ExecStart=/usr/local/bin/usm run
+TimeoutStartSec=20h

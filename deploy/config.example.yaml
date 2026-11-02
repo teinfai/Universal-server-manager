@@ -1,0 +1,20 @@
+server_name: gitlab-prod-01
+ssh:
+  host: 10.0.1.21
+  port: 22
+  user: usm
+  key_file: /etc/usm/id_ed25519
+  known_hosts_file: /etc/usm/known_hosts
+gitlab:
+  url: https://gitlab.example.com
+  token: glpat-xxxxxxxxxxxxxxxxxxxx
+  backup_dir: /var/opt/gitlab/backups
+telegram:
+  bot_token: "0000000000:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  chat_id: "-1000000000000"
+schedule:
+  timezone: Asia/Kuala_Lumpur
+  latest_start: "04:30"
+  ci_wait_minutes: 60
+state_dir: /var/lib/usm
+log_dir: /var/log/usm

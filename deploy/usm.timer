@@ -1,0 +1,9 @@
+[Unit]
+Description=Run USM at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 Asia/Kuala_Lumpur
+Persistent=false
+
+[Install]
+WantedBy=timers.target
