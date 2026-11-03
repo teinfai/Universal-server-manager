@@ -4,10 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/teinfai/Universal-server-manager/internal/config"
 	"github.com/teinfai/Universal-server-manager/internal/job"
 )
+
+const installURL = "https://raw.githubusercontent.com/teinfai/Universal-server-manager/main/install.sh"
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: usm run [--now] [--config <path>]")
@@ -15,6 +18,27 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       usm resume [--config <path>]")
 	fmt.Fprintln(os.Stderr, "       usm restore [--yes] [--config <path>]")
 	fmt.Fprintln(os.Stderr, "       usm test [--config <path>]")
+	fmt.Fprintln(os.Stderr, "       usm update      (run with sudo)")
+	fmt.Fprintln(os.Stderr, "       usm uninstall   (run with sudo)")
+}
+
+func installer(command string) int {
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "Run with sudo: sudo usm "+command)
+		return 2
+	}
+	script := "set -o pipefail; curl -fsSL " + installURL + " | bash -s -- --" + command
+	cmd := exec.Command("/bin/bash", "-c", script)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		return 1
+	}
+	return 0
 }
 
 func execute(args []string) int {
@@ -23,6 +47,13 @@ func execute(args []string) int {
 		return 2
 	}
 	command := args[0]
+	if command == "update" || command == "uninstall" {
+		if len(args) != 1 {
+			usage()
+			return 2
+		}
+		return installer(command)
+	}
 	switch command {
 	case "run", "status", "resume", "restore", "test":
 	default:

@@ -124,7 +124,11 @@ install -d -o usm -g usm -m 0750 /var/lib/usm /var/log/usm
 
 keep_settings=false
 if [[ -e /etc/usm/config.yaml ]]; then
-    ask 'Keep current settings? [Y/n]' Y '^[YyNn]$'
+    if [[ ${1:-} == --update ]]; then
+        answer=Y
+    else
+        ask 'Keep current settings? [Y/n]' Y '^[YyNn]$'
+    fi
     if [[ $answer == [Yy] ]]; then
         keep_settings=true
         start_time=
@@ -302,4 +306,5 @@ systemctl enable usm.timer
 systemctl restart usm.timer
 printf 'Installed. GitLab updates every night at %s (%s).\n' "$start_time" "$timezone"
 printf 'Check: sudo -u usm usm status\n'
+printf 'Update later: sudo usm update\n'
 exit 0

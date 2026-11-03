@@ -28,7 +28,7 @@ Get these two things ready:
 Run this on your GitLab server:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/teinfai/Universal-server-manager/main/install.sh | sudo bash
+curl -fsSL https://teinfai.github.io/usm.sh | sudo bash
 ```
 
 Most questions show a default in `[brackets]`. Press Enter to use it. You
@@ -46,6 +46,16 @@ you are done.
 The installer then shows a few commands to run on the GitLab server. SSH must
 be on, on the GitLab server. USM uses SSH even when it runs on the same
 server.
+
+## Update USM
+
+```sh
+sudo usm update
+```
+
+It installs the newest USM, keeps your settings, and runs all the
+checks again. GitLab and your backups are not touched. USM older than
+v0.5.0 doesn't have this command; run the install line once instead.
 
 ## What it does every night
 
@@ -79,6 +89,8 @@ time when nobody runs CI jobs.
 | `sudo -u usm usm run --now` | Updates one version now, without waiting for the update time. |
 | `sudo -u usm usm resume` | Starts the nightly updates again after a stop. |
 | `sudo -u usm usm restore --yes` | Puts back the last backup (from before the last update). Changes made since then are lost. |
+| `sudo usm update` | Installs the newest USM and keeps your settings. |
+| `sudo usm uninstall` | Removes USM. Asks before deleting settings and logs. |
 
 ## Good to know
 
@@ -98,8 +110,10 @@ time when nobody runs CI jobs.
 ## Uninstall
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/teinfai/Universal-server-manager/main/install.sh | sudo bash -s -- --uninstall
+sudo usm uninstall
 ```
+
+USM older than v0.5.0: `curl -fsSL https://teinfai.github.io/usm.sh | sudo bash -s -- --uninstall`
 
 ## License
 
