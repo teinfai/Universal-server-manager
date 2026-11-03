@@ -142,12 +142,21 @@ func Package(r *remote.Client) (string, Version, error) {
 			return "", current, err
 		}
 		output, err := r.Exec(context.Background(), "dpkg-query -W -f='${Status} ${Version}' "+candidate)
-		if err != nil || !strings.HasPrefix(output, "install ok installed ") {
+		if err != nil {
+			continue
+		}
+		prefix := ""
+		switch {
+		case strings.HasPrefix(output, "install ok installed "):
+			prefix = "install ok installed "
+		case strings.HasPrefix(output, "hold ok installed "):
+			prefix = "hold ok installed "
+		default:
 			continue
 		}
 		installed++
 		pkg = candidate
-		current, err = ParseVersion(strings.TrimPrefix(output, "install ok installed "))
+		current, err = ParseVersion(strings.TrimPrefix(output, prefix))
 		if err != nil {
 			versionErr = err
 		} else if "gitlab-"+current.Edition != candidate {
@@ -353,6 +362,36 @@ func byteCount(text string) (*big.Int, error) {
 	return number, nil
 }
 
+var usmBackupPart = regexp.MustCompile(`^(backup_information\.yml|db|repositories|[a-z_]+\.tar\.gz)$`)
+
+func USMBackupEntries(r *remote.Client, dir string) ([]string, error) {
+	if err := config.Validate("backup dir", dir); err != nil {
+		return nil, err
+	}
+	output, err := r.Exec(context.Background(), "sudo ls -1 "+dir)
+	if err != nil {
+		return nil, err
+	}
+	var entries []string
+	for _, entry := range strings.Split(output, "\n") {
+		switch {
+		case strings.HasSuffix(entry, "_gitlab_backup.tar"):
+			if config.Validate("backup name", strings.TrimSuffix(entry, "_gitlab_backup.tar")) == nil {
+				entries = append(entries, entry)
+			}
+		case strings.HasSuffix(entry, "-etc"):
+			if config.Validate("backup name", strings.TrimSuffix(entry, "-etc")) == nil {
+				entries = append(entries, entry)
+			}
+		case usmBackupPart.MatchString(entry):
+			entries = append(entries, entry)
+		case config.Validate("backup name", entry) == nil:
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+
 func Disk(r *remote.Client, dir string) error {
 	if err := config.Validate("backup dir", dir); err != nil {
 		return err
@@ -395,6 +434,19 @@ func Disk(r *remote.Client, dir string) error {
 	if used.Sign() < 0 {
 		return errors.New("backup size exceeds GitLab size")
 	}
+	entries, err := USMBackupEntries(r, dir)
+	if err != nil {
+		return err
+	}
+	reclaim := new(big.Int)
+	for _, entry := range entries {
+		entrySize, err := size(dir + "/" + entry)
+		if err != nil {
+			return err
+		}
+		reclaim.Add(reclaim, entrySize)
+	}
+	free.Add(free, reclaim)
 	if free.Cmp(used) <= 0 {
 		return &LowDisk{Need: used, Free: free}
 	}

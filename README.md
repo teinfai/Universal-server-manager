@@ -49,13 +49,13 @@ server.
 
 ## What it does every night
 
-1. Backs up GitLab and its settings.
+1. Deletes the previous USM backup, then backs up GitLab and its settings.
 2. Installs the next version on GitLab's official upgrade path. One
    version per night.
 3. Checks that GitLab works.
-4. Deletes the backup to save disk space. If the update fails, USM
-   puts the backup back by itself, then stops and tells your
-   Telegram group.
+4. Keeps this backup until the next update, so you can go back later. If
+   the update fails, USM puts the backup back by itself, then stops and
+   tells your Telegram group.
 
 USM does not pause CI. GitLab restarts during the update, so pick a
 time when nobody runs CI jobs.
@@ -78,17 +78,20 @@ time when nobody runs CI jobs.
 | `sudo -u usm usm test` | Checks every connection and sends a test message. |
 | `sudo -u usm usm run --now` | Updates one version now, without waiting for the update time. |
 | `sudo -u usm usm resume` | Starts the nightly updates again after a stop. |
-| `sudo -u usm usm restore --yes` | Puts back the backup from a failed update. |
+| `sudo -u usm usm restore --yes` | Puts back the last backup (from before the last update). Changes made since then are lost. |
 
 ## Good to know
 
-- Before each update, USM checks there is enough free disk for a
-  backup. If not, it skips that night and tells your Telegram group
-  how much space it needs. `usm test` checks this too.
+- Before each update, USM checks there is room for one full backup (it
+  may delete its previous backup to make room). If not, it skips that
+  night and tells your Telegram group how much space it needs.
+  `usm test` checks this too.
 - If an update fails, USM restores the backup by itself. It never touches
   GitLab after a good update.
 - The backup does not include object storage or an outside database. Back
   those up yourself.
+- GitLab's own small database backup before each update stays on. Delete
+  old ones in the backup folder when you no longer need them.
 - USM checks GitLab with GitLab's own readiness check, run on the GitLab
   server. No GitLab token is needed.
 

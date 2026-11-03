@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -199,13 +198,6 @@ func (j *Job) undo(action string, cause error) int {
 	if action == "Install" {
 		_, version, err := gitlab.Package(j.remote)
 		if err == nil && version.Full == j.state.LastBackup.Version && j.health() == nil {
-			j.state.LastBackup = state.Backup{}
-			if err := j.save(); err != nil {
-				return j.local(err)
-			}
-			if err := j.prune(); err != nil {
-				j.logf("prune: " + err.Error())
-			}
 			message := "Failed at Install. Nothing changed, GitLab is still " + base + ".\nUpdates stopped. When checked: usm resume"
 			return j.end("failed", message, message)
 		}
@@ -214,15 +206,7 @@ func (j *Job) undo(action string, cause error) int {
 	_, restoreErr := j.restoreBackup()
 	message := "Went back to " + base + ". GitLab OK.\nUpdates stopped. When checked: usm resume"
 	detail := message
-	if restoreErr == nil {
-		j.state.LastBackup = state.Backup{}
-		if err := j.save(); err != nil {
-			return j.local(err)
-		}
-		if err := j.prune(); err != nil {
-			j.logf("prune: " + err.Error())
-		}
-	} else {
+	if restoreErr != nil {
 		j.logf(restoreErr.Error())
 		if errors.Is(restoreErr, errStepRunning) || errors.Is(restoreErr, errStepUnknown) {
 			message = "Did not go back: the update may still be running.\nBackup " + backupHHMM + " is safe. Check by hand."
@@ -311,19 +295,19 @@ func (j *Job) Run(now bool) int {
 	if err != nil {
 		return j.skip("upgrade path list not reachable", err)
 	}
-	if err := gitlab.Disk(j.remote, j.config.GitLab.BackupDir); err != nil {
-		var low *gitlab.LowDisk
-		if errors.As(err, &low) {
-			return j.skip("not enough disk space. Need "+low.Text(), nil)
-		}
-		return j.skip("cannot read disk space", err)
-	}
 	path, err := gitlab.Path(current, versions, stops)
 	if err != nil {
 		return j.skip(err.Error(), err)
 	}
 	if len(path) == 0 {
 		return j.end("nothing", "", "")
+	}
+	if err := gitlab.Disk(j.remote, j.config.GitLab.BackupDir); err != nil {
+		var low *gitlab.LowDisk
+		if errors.As(err, &low) {
+			return j.skip("not enough disk space. Need "+low.Text(), nil)
+		}
+		return j.skip("cannot read disk space", err)
 	}
 	next := path[0]
 	start := j.config.ServerName + ": " + current.Base + " → " + next.Base
@@ -332,6 +316,17 @@ func (j *Job) Run(now bool) int {
 	}
 	if err := j.say(start); err != nil {
 		return j.end("skipped", "telegram unreachable", "")
+	}
+	j.state.LastBackup = state.Backup{}
+	if err := j.save(); err != nil {
+		return j.local(err)
+	}
+	deleted, err := j.prune()
+	if err != nil {
+		return j.skip("cannot remove the old backup", err)
+	}
+	if deleted > 0 {
+		j.say("Old backup deleted")
 	}
 	if err := j.backup(pkg, current); err != nil {
 		return j.fail("Backup", err)
@@ -359,16 +354,6 @@ func (j *Job) Run(now bool) int {
 		j.logf("gitlab:check: " + err.Error())
 	}
 	j.say("GitLab OK")
-	j.state.LastBackup = state.Backup{}
-	if err := j.save(); err != nil {
-		return j.local(err)
-	}
-	if err := j.prune(); err != nil {
-		j.logf("prune: " + err.Error())
-		j.say("Backup not deleted. Check the USM log.")
-	} else {
-		j.say("Backup deleted")
-	}
 	return j.end("done", "", "Done. Now "+next.Base)
 }
 
@@ -403,7 +388,7 @@ func (j *Job) backup(pkg string, current gitlab.Version) error {
 	if err := j.remote.Step("backup", []string{name, dir}, j.config.Location, j.saveActive); err != nil {
 		return err
 	}
-	if _, err := j.remote.Exec(context.Background(), "sudo test -s "+dir+"/backup_information.yml"); err != nil {
+	if _, err := j.remote.Exec(context.Background(), "sudo test -s "+dir+"/"+name+"/backup_information.yml"); err != nil {
 		return err
 	}
 	output, err := j.remote.Exec(context.Background(), "sudo ls -1 "+dir+"/"+name+"-etc")
@@ -434,44 +419,18 @@ func (j *Job) backup(pkg string, current gitlab.Version) error {
 	return nil
 }
 
-var untarredBackupFile = regexp.MustCompile(`^(backup_information\.yml|[a-z_]+\.tar\.gz)$`)
-
-func (j *Job) prune() error {
+func (j *Job) prune() (int, error) {
 	dir := j.config.GitLab.BackupDir
-	if err := config.Validate("backup dir", dir); err != nil {
-		return err
-	}
-	output, err := j.remote.Exec(context.Background(), "sudo ls -1 "+dir)
+	entries, err := gitlab.USMBackupEntries(j.remote, dir)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	for _, entry := range strings.Split(output, "\n") {
-		var name, command string
-		switch {
-		case strings.HasSuffix(entry, "_gitlab_backup.tar"):
-			name = strings.TrimSuffix(entry, "_gitlab_backup.tar")
-			command = "sudo rm -f "
-			if config.Validate("backup name", name) != nil {
-				continue
-			}
-		case strings.HasSuffix(entry, "-etc"):
-			name = strings.TrimSuffix(entry, "-etc")
-			command = "sudo rm -rf "
-			if config.Validate("backup name", name) != nil {
-				continue
-			}
-		case entry == "db" || entry == "repositories":
-			command = "sudo rm -rf "
-		case untarredBackupFile.MatchString(entry):
-			command = "sudo rm -f "
-		default:
-			continue
-		}
-		if _, err := j.remote.Exec(context.Background(), command+dir+"/"+entry); err != nil {
-			return err
+	for _, entry := range entries {
+		if _, err := j.remote.Exec(context.Background(), "sudo rm -rf "+dir+"/"+entry); err != nil {
+			return 0, err
 		}
 	}
-	return nil
+	return len(entries), nil
 }
 
 var (
@@ -546,7 +505,7 @@ func (j *Job) Restore(yes bool) int {
 	}
 	backup := j.state.LastBackup
 	if backup.Name == "" {
-		fmt.Println("No backup to restore. USM deletes the backup after a good update.")
+		fmt.Println("No backup to restore.")
 		return 2
 	}
 	if !yes {

@@ -44,6 +44,10 @@ trap 'printf "%s\n" "$?" >"/var/lib/usm/$id.status"' EXIT
 case "$action" in
   backup)
     gitlab-backup create SKIP=tar
+    mkdir "$dir/$name"
+    shopt -s nullglob
+    mv "$dir/backup_information.yml" "$dir/db" "$dir/repositories" "$dir"/*.tar.gz "$dir/$name/"
+    shopt -u nullglob
     mkdir -p "$dir/$name-etc"
     gitlab-ctl backup-etc --backup-path "$dir/$name-etc"
     ;;
@@ -53,7 +57,7 @@ case "$action" in
     apt-mark hold "$pkg"
     ;;
   restore)
-    [[ -s "$dir/backup_information.yml" && -d "$dir/$name-etc" ]] || exit 65
+    [[ -s "$dir/$name/backup_information.yml" && -d "$dir/$name-etc" ]] || exit 65
     gitlab-ctl stop puma
     gitlab-ctl stop sidekiq
     apt-mark unhold "$pkg" || true
@@ -65,7 +69,13 @@ case "$action" in
     gitlab-ctl reconfigure
     gitlab-ctl stop puma
     gitlab-ctl stop sidekiq
+    mv "$dir/$name"/* "$dir/"
     GITLAB_ASSUME_YES=1 gitlab-backup restore
+    shopt -s nullglob
+    for entry in "$dir/backup_information.yml" "$dir/db" "$dir/repositories" "$dir"/*.tar.gz; do
+      [[ -e "$entry" ]] && mv "$entry" "$dir/$name/"
+    done
+    shopt -u nullglob
     gitlab-ctl reconfigure
     gitlab-ctl restart
     ;;
