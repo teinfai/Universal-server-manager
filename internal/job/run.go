@@ -300,7 +300,7 @@ func (j *Job) Run(now bool) int {
 		return j.skip(err.Error(), err)
 	}
 	if len(path) == 0 {
-		return j.end("nothing", "", "")
+		return j.end("nothing", "", j.config.ServerName+": checked, no new version. GitLab is still "+current.Base+". Next check "+j.config.Schedule.Start+".")
 	}
 	if err := gitlab.Disk(j.remote, j.config.GitLab.BackupDir); err != nil {
 		var low *gitlab.LowDisk

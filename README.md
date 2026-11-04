@@ -59,6 +59,8 @@ v0.5.0 doesn't have this command; run the install line once instead.
 
 ## What it does every night
 
+First it checks for a new version. If there is none, it tells your Telegram group "checked, no new version" and stops for the night.
+
 1. Deletes the previous USM backup, then backs up GitLab and its settings.
 2. Installs the next version on GitLab's official upgrade path. One
    version per night.
